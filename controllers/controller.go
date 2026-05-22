@@ -120,14 +120,14 @@ func (vc *VeleroController) Run(ctx context.Context) {
 		nil,
 	)
 
-	vc.watchResource(factory, backupsGVR, "Backup")
+	reg := vc.watchResource(factory, backupsGVR, "Backup")
 
 	factory.Start(ctx.Done())
 
-	syncMap := factory.WaitForCacheSync(ctx.Done())
-	for gvr, synced := range syncMap {
-		if !synced {
-			log.Printf("Informer for %s failed to sync.", gvr.Resource)
+	if reg != nil {
+		if !cache.WaitForCacheSync(ctx.Done(), reg.HasSynced) {
+			log.Printf("Timed out waiting for backup handler to sync.")
+			return
 		}
 	}
 	vc.hasSynced.Store(true)
@@ -140,9 +140,9 @@ func (vc *VeleroController) Run(ctx context.Context) {
 	log.Println("Shutting down Velero Controller.")
 }
 
-func (vc *VeleroController) watchResource(factory dynamicinformer.DynamicSharedInformerFactory, gvr schema.GroupVersionResource, kind string) {
+func (vc *VeleroController) watchResource(factory dynamicinformer.DynamicSharedInformerFactory, gvr schema.GroupVersionResource, kind string) cache.ResourceEventHandlerRegistration {
 	informer := factory.ForResource(gvr)
-	_, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+	reg, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			vc.handleEvent(obj, gvr, kind, !vc.hasSynced.Load())
 		},
@@ -152,7 +152,9 @@ func (vc *VeleroController) watchResource(factory dynamicinformer.DynamicSharedI
 	})
 	if err != nil {
 		log.Printf("Failed to add event handler for %s: %v", kind, err)
+		return nil
 	}
+	return reg
 }
 
 func (vc *VeleroController) notifyAll(status, message string) {
@@ -202,7 +204,7 @@ func extractErrors(obj map[string]interface{}) int {
 }
 
 func isTerminalPhase(phase string) bool {
-	return phase == "Completed" || phase == "PartiallyFailed" || phase == "Failed" || phase == "FinalizingPartiallyFailed"
+	return phase == "Completed" || phase == "PartiallyFailed" || phase == "Failed"
 }
 
 func isInProgressPhase(phase string) bool {
