@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,13 +22,22 @@ import (
 	"github.com/zokeber/velero-notifications/notifications"
 )
 
+const notifiedAnnotation = "velero-notifications.io/notified"
+
+var backupsGVR = schema.GroupVersionResource{
+	Group:    "velero.io",
+	Version:  "v1",
+	Resource: "backups",
+}
+
 type VeleroController struct {
-	Namespace        string
-	Interval         time.Duration
-	Verbose          bool
-	Notifiers        []notifications.Notifier
-	dynClient        dynamic.Interface
-	processedBackups map[string]string
+	Namespace       string
+	ResyncPeriod    time.Duration
+	Verbose         bool
+	NotifyOnStartup bool
+	Notifiers       []notifications.Notifier
+	dynClient       dynamic.Interface
+	hasSynced       atomic.Bool
 }
 
 func formatTime(tStr string) string {
@@ -38,7 +48,7 @@ func formatTime(tStr string) string {
 	return t.Format("01/02/06 at 3:04 PM MST")
 }
 
-func NewVeleroController(namespace string, checkInterval int, verbose bool, notifiers []notifications.Notifier) (*VeleroController, error) {
+func NewVeleroController(namespace string, checkInterval int, verbose bool, notifyOnStartup bool, notifiers []notifications.Notifier) (*VeleroController, error) {
 	var kubeconfig *string
 	var config *rest.Config
 	var err error
@@ -83,29 +93,25 @@ func NewVeleroController(namespace string, checkInterval int, verbose bool, noti
 		log.Printf("Successfully connected to the Kubernetes API server in namespace '%s'.", namespace)
 	}
 
+	resync := time.Duration(checkInterval) * time.Second
+	if resync > 0 && resync < 30*time.Second {
+		resync = 30 * time.Second
+	}
+
 	return &VeleroController{
-		Namespace:        namespace,
-		Interval:         time.Duration(checkInterval) * time.Second,
-		Verbose:          verbose,
-		Notifiers:        notifiers,
-		dynClient:        dynClient,
-		processedBackups: make(map[string]string),
+		Namespace:       namespace,
+		ResyncPeriod:    resync,
+		Verbose:         verbose,
+		NotifyOnStartup: notifyOnStartup,
+		Notifiers:       notifiers,
+		dynClient:       dynClient,
 	}, nil
 }
 
 func (vc *VeleroController) Run(ctx context.Context) {
-	ticker := time.NewTicker(vc.Interval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("Shutting down Velero Controller.")
-			return
-		case <-ticker.C:
-			vc.checkBackups()
-		}
-	}
+	// replaced in Task 5
+	<-ctx.Done()
+	log.Println("Shutting down Velero Controller.")
 }
 
 func (vc *VeleroController) notifyAll(status, message string) {
@@ -154,13 +160,9 @@ func extractErrors(obj map[string]interface{}) int {
 	return errorsCount
 }
 
+// checkBackups is kept for reference; will be deleted in Task 5.
 func (vc *VeleroController) checkBackups() {
-	backupsGVR := schema.GroupVersionResource{
-		Group:    "velero.io",
-		Version:  "v1",
-		Resource: "backups",
-	}
-
+	processedBackups := make(map[string]string) // TODO(Task5): remove with checkBackups
 	list, err := vc.dynClient.Resource(backupsGVR).Namespace(vc.Namespace).List(context.TODO(), metav1.ListOptions{})
 
 	if err != nil {
@@ -181,14 +183,13 @@ func (vc *VeleroController) checkBackups() {
 			continue
 		}
 
-		if _, exists := vc.processedBackups[backupName]; !exists {
-			if phase == "InProgress" || phase == "Finalizing" || phase == "WaitingForPluginOperations" {
-				vc.processedBackups[backupName] = phase
-				if vc.Verbose {
-					log.Printf("New backup detected in %s: %s.", phase, backupName)
-				}
-			}
+		if _, exists := processedBackups[backupName]; exists {
 			continue
+		} else if phase == "InProgress" || phase == "Finalizing" || phase == "WaitingForPluginOperations" {
+			processedBackups[backupName] = phase
+			if vc.Verbose {
+				log.Printf("New backup detected in %s: %s.", phase, backupName)
+			}
 		}
 
 		if phase == "Completed" || phase == "PartiallyFailed" || phase == "Failed" {
@@ -243,7 +244,7 @@ func (vc *VeleroController) checkBackups() {
 			log.Println(message)
 			vc.notifyAll(phase, message)
 
-			delete(vc.processedBackups, backupName)
+			delete(processedBackups, backupName)
 		}
 
 		if vc.Verbose && (phase == "InProgress" || phase == "Finalizing" || phase == "WaitingForPluginOperations") {
