@@ -163,7 +163,7 @@ func extractErrors(obj map[string]interface{}) int {
 }
 
 func isTerminalPhase(phase string) bool {
-	return phase == "Completed" || phase == "PartiallyFailed" || phase == "Failed"
+	return phase == "Completed" || phase == "PartiallyFailed" || phase == "Failed" || phase == "FinalizingPartiallyFailed"
 }
 
 func isInProgressPhase(phase string) bool {
