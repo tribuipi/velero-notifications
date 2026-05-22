@@ -15,6 +15,7 @@ type Config struct {
 	CheckInterval int    `yaml:"check_interval"`
 	Notifications struct {
 		NotificationPrefix string `yaml:"notification_prefix"`
+		NotifyOnStartup    bool   `yaml:"notify_on_startup"`
 		Slack              struct {
 			Enabled      bool   `yaml:"enabled"`
 			FailuresOnly bool   `yaml:"failures_only"`
