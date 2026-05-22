@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
@@ -14,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -158,6 +160,126 @@ func extractErrors(obj map[string]interface{}) int {
 		}
 	}
 	return errorsCount
+}
+
+func isTerminalPhase(phase string) bool {
+	return phase == "Completed" || phase == "PartiallyFailed" || phase == "Failed"
+}
+
+func isInProgressPhase(phase string) bool {
+	return phase == "InProgress" || phase == "Finalizing" || phase == "WaitingForPluginOperations"
+}
+
+func buildMessage(obj map[string]interface{}, kind, name, phase string) string {
+	completionTimestamp, found, err := unstructured.NestedString(obj, "status", "completionTimestamp")
+	if err != nil || !found {
+		completionTimestamp = "Unknown"
+	}
+	startTimestamp, found, err := unstructured.NestedString(obj, "status", "startTimestamp")
+	if err != nil || !found {
+		startTimestamp = "Unknown"
+	}
+
+	progress, found, err := unstructured.NestedMap(obj, "status", "progress")
+	itemsBackedUp := "Unknown"
+	totalItems := "Unknown"
+	if found && err == nil {
+		if ib, ok := progress["itemsBackedUp"]; ok {
+			itemsBackedUp = fmt.Sprintf("%v", ib)
+		}
+		if ti, ok := progress["totalItems"]; ok {
+			totalItems = fmt.Sprintf("%v", ti)
+		}
+	}
+
+	warnings := extractWarnings(obj)
+	errorsCount := extractErrors(obj)
+
+	var message string
+	if phase == "Completed" {
+		message = fmt.Sprintf("%s %s completed successfully.\n\nStart Time: %s, End Time: %s.\n\nProgress: %s/%s items processed",
+			kind, name, formatTime(startTimestamp), formatTime(completionTimestamp), itemsBackedUp, totalItems)
+	} else {
+		message = fmt.Sprintf("%s %s finished with status: %s.\n\nStart Time: %s, End Time: %s.\n\nProgress: %s/%s items processed",
+			kind, name, phase, formatTime(startTimestamp), formatTime(completionTimestamp), itemsBackedUp, totalItems)
+		if phase == "Failed" {
+			if fr, found2, err2 := unstructured.NestedString(obj, "status", "failureReason"); err2 == nil && found2 {
+				message += fmt.Sprintf("\nFailure Reason: %s", fr)
+			}
+		}
+	}
+
+	if warnings > 0 {
+		message += fmt.Sprintf(" (with %d warnings).", warnings)
+	}
+	if errorsCount > 0 {
+		message += fmt.Sprintf(" (with %d errors).", errorsCount)
+	}
+
+	return message
+}
+
+func (vc *VeleroController) patchNotifiedAnnotation(gvr schema.GroupVersionResource, namespace, name, phase string) error {
+	patch := map[string]interface{}{
+		"metadata": map[string]interface{}{
+			"annotations": map[string]string{
+				notifiedAnnotation: phase,
+			},
+		},
+	}
+	data, err := json.Marshal(patch)
+	if err != nil {
+		return fmt.Errorf("marshal patch: %w", err)
+	}
+	_, err = vc.dynClient.Resource(gvr).Namespace(namespace).Patch(
+		context.TODO(),
+		name,
+		types.MergePatchType,
+		data,
+		metav1.PatchOptions{},
+	)
+	return err
+}
+
+func (vc *VeleroController) handleEvent(obj interface{}, gvr schema.GroupVersionResource, kind string, isInitialSync bool) {
+	u, ok := obj.(*unstructured.Unstructured)
+	if !ok {
+		return
+	}
+
+	name := u.GetName()
+	namespace := u.GetNamespace()
+
+	phase, found, err := unstructured.NestedString(u.Object, "status", "phase")
+	if err != nil || !found {
+		return
+	}
+
+	if !isTerminalPhase(phase) {
+		if vc.Verbose && isInProgressPhase(phase) {
+			log.Printf("%s %s is in %s.", kind, name, phase)
+		}
+		return
+	}
+
+	if _, notified := u.GetAnnotations()[notifiedAnnotation]; notified {
+		return
+	}
+
+	if isInitialSync && !vc.NotifyOnStartup {
+		if err := vc.patchNotifiedAnnotation(gvr, namespace, name, phase); err != nil {
+			log.Printf("Warning: failed to mark %s %s as seen: %v", kind, name, err)
+		}
+		return
+	}
+
+	message := buildMessage(u.Object, kind, name, phase)
+	log.Println(message)
+	vc.notifyAll(phase, message)
+
+	if err := vc.patchNotifiedAnnotation(gvr, namespace, name, phase); err != nil {
+		log.Printf("Warning: failed to mark %s %s as notified: %v", kind, name, err)
+	}
 }
 
 // checkBackups is kept for reference; will be deleted in Task 5.
