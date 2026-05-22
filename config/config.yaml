@@ -5,6 +5,7 @@ namespace: "velero"
 check_interval: 5
 notifications:
   notification_prefix: "[Velero]"
+  notify_on_startup: false
   slack:
     enabled: true
     failures_only: false
