@@ -17,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/dynamic"
+	"k8s.io/client-go/dynamic/dynamicinformer"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
 	"k8s.io/client-go/util/homedir"
 
@@ -111,9 +113,46 @@ func NewVeleroController(namespace string, checkInterval int, verbose bool, noti
 }
 
 func (vc *VeleroController) Run(ctx context.Context) {
-	// replaced in Task 5
+	factory := dynamicinformer.NewFilteredDynamicSharedInformerFactory(
+		vc.dynClient,
+		vc.ResyncPeriod,
+		vc.Namespace,
+		nil,
+	)
+
+	vc.watchResource(factory, backupsGVR, "Backup")
+
+	factory.Start(ctx.Done())
+
+	syncMap := factory.WaitForCacheSync(ctx.Done())
+	for gvr, synced := range syncMap {
+		if !synced {
+			log.Printf("Informer for %s failed to sync.", gvr.Resource)
+		}
+	}
+	vc.hasSynced.Store(true)
+
+	if vc.Verbose {
+		log.Printf("Controller synced. Watching for Velero events in namespace '%s'.", vc.Namespace)
+	}
+
 	<-ctx.Done()
 	log.Println("Shutting down Velero Controller.")
+}
+
+func (vc *VeleroController) watchResource(factory dynamicinformer.DynamicSharedInformerFactory, gvr schema.GroupVersionResource, kind string) {
+	informer := factory.ForResource(gvr)
+	_, err := informer.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			vc.handleEvent(obj, gvr, kind, !vc.hasSynced.Load())
+		},
+		UpdateFunc: func(_, newObj interface{}) {
+			vc.handleEvent(newObj, gvr, kind, false)
+		},
+	})
+	if err != nil {
+		log.Printf("Failed to add event handler for %s: %v", kind, err)
+	}
 }
 
 func (vc *VeleroController) notifyAll(status, message string) {
@@ -282,95 +321,3 @@ func (vc *VeleroController) handleEvent(obj interface{}, gvr schema.GroupVersion
 	}
 }
 
-// checkBackups is kept for reference; will be deleted in Task 5.
-func (vc *VeleroController) checkBackups() {
-	processedBackups := make(map[string]string) // TODO(Task5): remove with checkBackups
-	list, err := vc.dynClient.Resource(backupsGVR).Namespace(vc.Namespace).List(context.TODO(), metav1.ListOptions{})
-
-	if err != nil {
-		log.Printf("Failed to retrieving backups from Velero: %v", err)
-		vc.notifyAll("Error", fmt.Sprintf("Failed to retrieving backups from Velero: %v", err))
-		return
-	}
-
-	if vc.Verbose {
-		log.Printf("Found %d backups in namespace '%s'.", len(list.Items), vc.Namespace)
-	}
-
-	for _, item := range list.Items {
-		backupName, _, _ := unstructured.NestedString(item.Object, "metadata", "name")
-		phase, found, err := unstructured.NestedString(item.Object, "status", "phase")
-		if err != nil || !found {
-			log.Printf("Backup %s is not supported.", backupName)
-			continue
-		}
-
-		if _, exists := processedBackups[backupName]; exists {
-			continue
-		} else if phase == "InProgress" || phase == "Finalizing" || phase == "WaitingForPluginOperations" {
-			processedBackups[backupName] = phase
-			if vc.Verbose {
-				log.Printf("New backup detected in %s: %s.", phase, backupName)
-			}
-		}
-
-		if phase == "Completed" || phase == "PartiallyFailed" || phase == "Failed" {
-			completionTimestamp, found, err := unstructured.NestedString(item.Object, "status", "completionTimestamp")
-			if err != nil || !found {
-				completionTimestamp = "Unknown"
-			}
-			startTimestamp, found, err := unstructured.NestedString(item.Object, "status", "startTimestamp")
-			if err != nil || !found {
-				startTimestamp = "Unknown"
-			}
-			progress, found, err := unstructured.NestedMap(item.Object, "status", "progress")
-			itemsBackedUp := "Unknown"
-			totalItems := "Unknown"
-			if found && err == nil {
-				if ib, ok := progress["itemsBackedUp"]; ok {
-					itemsBackedUp = fmt.Sprintf("%v", ib)
-				}
-				if ti, ok := progress["totalItems"]; ok {
-					totalItems = fmt.Sprintf("%v", ti)
-				}
-			}
-
-			warnings := extractWarnings(item.Object)
-			errorsCount := extractErrors(item.Object)
-			failureReason := ""
-
-			if phase == "Failed" {
-				if fr, found, err := unstructured.NestedString(item.Object, "status", "failureReason"); err == nil && found {
-					failureReason = fr
-				}
-			}
-
-			var message string
-			if phase == "Completed" {
-				message = fmt.Sprintf("Backup %s completed successfully.\n\nStart Time: %s, End Time: %s.\n\nProgress: %s/%s items processed", backupName, formatTime(startTimestamp), formatTime(completionTimestamp), itemsBackedUp, totalItems)
-			} else {
-				message = fmt.Sprintf("Backup %s finished with status: %s.\n\nStart Time: %s, End Time: %s.\n\nProgress: %s/%s items processed", backupName, phase, formatTime(startTimestamp), formatTime(completionTimestamp), itemsBackedUp, totalItems)
-				if failureReason != "" {
-					message += fmt.Sprintf("\nFailure Reason: %s", failureReason)
-				}
-			}
-
-			if warnings > 0 {
-				message += fmt.Sprintf(" (with %d warnings).", warnings)
-			}
-
-			if errorsCount > 0 {
-				message += fmt.Sprintf(" (with %d errors).", errorsCount)
-			}
-
-			log.Println(message)
-			vc.notifyAll(phase, message)
-
-			delete(processedBackups, backupName)
-		}
-
-		if vc.Verbose && (phase == "InProgress" || phase == "Finalizing" || phase == "WaitingForPluginOperations") {
-			log.Printf("Backup %s is still in %s.", backupName, phase)
-		}
-	}
-}
