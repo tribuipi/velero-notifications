@@ -60,6 +60,7 @@ func main() {
 		cfg.Namespace,
 		cfg.CheckInterval,
 		cfg.Logging.Verbose,
+		cfg.Notifications.NotifyOnStartup,
 		notifiers,
 	)
 
