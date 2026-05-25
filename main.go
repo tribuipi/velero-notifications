@@ -62,6 +62,10 @@ func main() {
 		cfg.Logging.Verbose,
 		cfg.Notifications.NotifyOnStartup,
 		notifiers,
+		controller.FilterConfig{
+			NamePatterns:  cfg.Filters.NamePatterns,
+			AnnotationKey: cfg.Filters.AnnotationKey,
+		},
 	)
 
 	if err != nil {

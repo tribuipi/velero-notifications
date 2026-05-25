@@ -90,7 +90,7 @@ func (vc *VeleroController) matchesFilter(u *unstructured.Unstructured) bool {
 	return false
 }
 
-func NewVeleroController(namespace string, checkInterval int, verbose bool, notifyOnStartup bool, notifiers []notifications.Notifier) (*VeleroController, error) {
+func NewVeleroController(namespace string, checkInterval int, verbose bool, notifyOnStartup bool, notifiers []notifications.Notifier, filters FilterConfig) (*VeleroController, error) {
 	var kubeconfig *string
 	var config *rest.Config
 	var err error
@@ -126,7 +126,6 @@ func NewVeleroController(namespace string, checkInterval int, verbose bool, noti
 	}
 
 	dynClient, err := dynamic.NewForConfig(config)
-
 	if err != nil {
 		log.Fatalf("Error creating dynamic client: %v", err)
 	}
@@ -135,18 +134,25 @@ func NewVeleroController(namespace string, checkInterval int, verbose bool, noti
 		log.Printf("Successfully connected to the Kubernetes API server in namespace '%s'.", namespace)
 	}
 
+	patterns, err := compilePatterns(filters.NamePatterns)
+	if err != nil {
+		return nil, err
+	}
+
 	resync := time.Duration(checkInterval) * time.Second
 	if resync > 0 && resync < 30*time.Second {
 		resync = 30 * time.Second
 	}
 
 	return &VeleroController{
-		Namespace:       namespace,
-		ResyncPeriod:    resync,
-		Verbose:         verbose,
-		NotifyOnStartup: notifyOnStartup,
-		Notifiers:       notifiers,
-		dynClient:       dynClient,
+		Namespace:        namespace,
+		ResyncPeriod:     resync,
+		Verbose:          verbose,
+		NotifyOnStartup:  notifyOnStartup,
+		Notifiers:        notifiers,
+		dynClient:        dynClient,
+		filterPatterns:   patterns,
+		filterAnnotation: filters.AnnotationKey,
 	}, nil
 }
 
