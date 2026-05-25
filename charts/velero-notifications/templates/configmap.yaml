@@ -42,7 +42,11 @@ data:
         to: {{ .Values.email.to | quote }}
     filters:
       annotation_key: {{ .Values.filters.annotation_key | default "" | quote }}
+      {{- if .Values.filters.name_patterns }}
       name_patterns:
       {{- range .Values.filters.name_patterns }}
         - {{ . | quote }}
+      {{- end }}
+      {{- else }}
+      name_patterns: []
       {{- end }}
