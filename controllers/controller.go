@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"sync/atomic"
 	"time"
@@ -34,14 +35,21 @@ var backupsGVR = schema.GroupVersionResource{
 	Resource: "backups",
 }
 
+type FilterConfig struct {
+	NamePatterns  []string
+	AnnotationKey string
+}
+
 type VeleroController struct {
-	Namespace       string
-	ResyncPeriod    time.Duration
-	Verbose         bool
-	NotifyOnStartup bool
-	Notifiers       []notifications.Notifier
-	dynClient       dynamic.Interface
-	hasSynced       atomic.Bool
+	Namespace        string
+	ResyncPeriod     time.Duration
+	Verbose          bool
+	NotifyOnStartup  bool
+	Notifiers        []notifications.Notifier
+	dynClient        dynamic.Interface
+	hasSynced        atomic.Bool
+	filterPatterns   []*regexp.Regexp
+	filterAnnotation string
 }
 
 func formatTime(tStr string) string {
@@ -52,7 +60,37 @@ func formatTime(tStr string) string {
 	return t.Format("01/02/06 at 3:04 PM MST")
 }
 
-func NewVeleroController(namespace string, checkInterval int, verbose bool, notifyOnStartup bool, notifiers []notifications.Notifier) (*VeleroController, error) {
+func compilePatterns(patterns []string) ([]*regexp.Regexp, error) {
+	result := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return nil, fmt.Errorf("invalid name_pattern %q: %w", p, err)
+		}
+		result = append(result, re)
+	}
+	return result, nil
+}
+
+func (vc *VeleroController) matchesFilter(u *unstructured.Unstructured) bool {
+	if len(vc.filterPatterns) == 0 && vc.filterAnnotation == "" {
+		return true
+	}
+	if vc.filterAnnotation != "" {
+		if _, ok := u.GetAnnotations()[vc.filterAnnotation]; ok {
+			return true
+		}
+	}
+	name := u.GetName()
+	for _, re := range vc.filterPatterns {
+		if re.MatchString(name) {
+			return true
+		}
+	}
+	return false
+}
+
+func NewVeleroController(namespace string, checkInterval int, verbose bool, notifyOnStartup bool, notifiers []notifications.Notifier, filters FilterConfig) (*VeleroController, error) {
 	var kubeconfig *string
 	var config *rest.Config
 	var err error
@@ -88,7 +126,6 @@ func NewVeleroController(namespace string, checkInterval int, verbose bool, noti
 	}
 
 	dynClient, err := dynamic.NewForConfig(config)
-
 	if err != nil {
 		log.Fatalf("Error creating dynamic client: %v", err)
 	}
@@ -97,18 +134,25 @@ func NewVeleroController(namespace string, checkInterval int, verbose bool, noti
 		log.Printf("Successfully connected to the Kubernetes API server in namespace '%s'.", namespace)
 	}
 
+	patterns, err := compilePatterns(filters.NamePatterns)
+	if err != nil {
+		return nil, err
+	}
+
 	resync := time.Duration(checkInterval) * time.Second
 	if resync > 0 && resync < 30*time.Second {
 		resync = 30 * time.Second
 	}
 
 	return &VeleroController{
-		Namespace:       namespace,
-		ResyncPeriod:    resync,
-		Verbose:         verbose,
-		NotifyOnStartup: notifyOnStartup,
-		Notifiers:       notifiers,
-		dynClient:       dynClient,
+		Namespace:        namespace,
+		ResyncPeriod:     resync,
+		Verbose:          verbose,
+		NotifyOnStartup:  notifyOnStartup,
+		Notifiers:        notifiers,
+		dynClient:        dynClient,
+		filterPatterns:   patterns,
+		filterAnnotation: filters.AnnotationKey,
 	}, nil
 }
 
@@ -300,6 +344,10 @@ func (vc *VeleroController) handleEvent(obj interface{}, gvr schema.GroupVersion
 		if vc.Verbose && isInProgressPhase(phase) {
 			log.Printf("%s %s is in %s.", kind, name, phase)
 		}
+		return
+	}
+
+	if !vc.matchesFilter(u) {
 		return
 	}
 

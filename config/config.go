@@ -6,6 +6,11 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+type FiltersConfig struct {
+	NamePatterns  []string `yaml:"name_patterns"`
+	AnnotationKey string   `yaml:"annotation_key"`
+}
+
 type Config struct {
 	Logging struct {
 		Level   string `yaml:"level"`
@@ -34,6 +39,7 @@ type Config struct {
 			To           string `yaml:"to"`
 		} `yaml:"email"`
 	} `yaml:"notifications"`
+	Filters FiltersConfig `yaml:"filters"`
 }
 
 func LoadConfig(path string) (*Config, error) {
