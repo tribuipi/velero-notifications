@@ -40,3 +40,9 @@ data:
         password: {{ .Values.email.password | quote }}
         from: {{ .Values.email.from | quote }}
         to: {{ .Values.email.to | quote }}
+    filters:
+      annotation_key: {{ .Values.filters.annotation_key | default "" | quote }}
+      name_patterns:
+      {{- range .Values.filters.name_patterns }}
+        - {{ . | quote }}
+      {{- end }}

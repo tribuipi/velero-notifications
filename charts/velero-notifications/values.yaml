@@ -53,6 +53,14 @@ email:
   # -- The recipient email address that will receive the notifications.
   to: "johndoe@gmail.com"
 
+filters:
+  # -- List of Go regex patterns matched against backup names. A backup matching any pattern is notified.
+  # Leave empty to notify all backups (default).
+  name_patterns: []
+  # -- Annotation key for opt-in filtering. Any backup carrying this annotation key (any value) is notified.
+  # Leave empty to notify all backups (default).
+  annotation_key: ""
+
 resources:
   limits:
     # -- This value sets the maximum CPU the container can use

@@ -21,3 +21,10 @@ notifications:
     password: ""
     from: ""
     to: ""
+
+filters:
+  name_patterns: []
+  #   - "^daily-.*"
+  #   - "^prod-backup-.*"
+  annotation_key: ""
+  # annotation_key: "velero-notifications.io/notify"
