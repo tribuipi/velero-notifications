@@ -54,7 +54,8 @@ email:
   to: "johndoe@gmail.com"
 
 filters:
-  # -- List of Go regex patterns matched against backup names. A backup matching any pattern is notified.
+  # -- List of Go regex patterns matched against backup names using Go's regexp.MatchString (unanchored —
+  # use ^ and $ to anchor to start/end). A backup matching any pattern is notified.
   # Leave empty to notify all backups (default).
   name_patterns: []
   # -- Annotation key for opt-in filtering. Any backup carrying this annotation key (any value) is notified.

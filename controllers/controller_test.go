@@ -342,6 +342,28 @@ func TestHandleEvent_FilteredOutDuringInitialSync(t *testing.T) {
 	}
 }
 
+func TestHandleEvent_FilteredIn_InitialSyncSkip(t *testing.T) {
+	t.Parallel()
+
+	daily := regexp.MustCompile("^daily-.*")
+	mock := &mockNotifier{}
+	vc, fakeClient := newTestControllerWithFilter(mock, false, []*regexp.Regexp{daily}, "") // notifyOnStartup=false
+	backup := newTestBackup("daily-backup", "velero", "Completed", nil)
+	createBackup(t, fakeClient, backup)
+
+	vc.handleEvent(backup, backupsGVR, "Backup", true) // isInitialSync=true
+
+	if len(mock.calls) != 0 {
+		t.Fatalf("expected 0 notify calls during initial sync with notifyOnStartup=false, got %d", len(mock.calls))
+	}
+	got, _ := fakeClient.Resource(backupsGVR).Namespace("velero").Get(
+		context.Background(), "daily-backup", metav1.GetOptions{},
+	)
+	if got.GetAnnotations()[notifiedAnnotation] != "Completed" {
+		t.Fatal("expected notified annotation to be silently set during initial sync")
+	}
+}
+
 func TestHandleEvent_InitialSyncNotify(t *testing.T) {
 	t.Parallel()
 
