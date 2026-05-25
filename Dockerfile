@@ -1,5 +1,5 @@
 #Step 1
-FROM golang:1.25.8-alpine as builder
+FROM golang:1.25.8-alpine AS builder
 
 WORKDIR /app
 COPY go.mod .
